@@ -1,4 +1,8 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppo_continuous_actionpy
+import sys
+sys.path.append('../../cpg_ring_attractor/')
+sys.path.append('../')
+
 import os
 import random
 import time
@@ -12,6 +16,8 @@ import torch.optim as optim
 import tyro
 from torch.distributions.normal import Normal
 from torch.utils.tensorboard import SummaryWriter
+
+import cpg_control
 
 
 @dataclass
@@ -32,7 +38,7 @@ class Args:
     """the entity (team) of wandb's project"""
     capture_video: bool = True
     """whether to capture videos of the agent performances (check out `videos` folder)"""
-    save_model: bool = False
+    save_model: bool = True
     """whether to save model into the `runs/{run_name}` folder"""
     upload_model: bool = False
     """whether to upload the saved model to huggingface"""
@@ -40,7 +46,7 @@ class Args:
     """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
-    env_id: str = "HalfCheetah-v4"
+    env_id: str = "Spot-v0"
     """the id of the environment"""
     total_timesteps: int = 1000000
     """total timesteps of the experiments"""
@@ -113,6 +119,10 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 class Agent(nn.Module):
     def __init__(self, envs):
         super().__init__()
+        self.gait_type = 'trot'
+        self.cpg_ctrl = cpg_control.CPGControl()
+        # torch.nn.init.zeros_(self.cpg_ctrl.cpgspot_clockwise.readout_layer_joint_angles[self.gait_type].weight)
+
         self.critic = nn.Sequential(
             layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
             nn.Tanh(),
@@ -133,9 +143,10 @@ class Agent(nn.Module):
         return self.critic(x)
 
     def get_action_and_value(self, x, action=None):
-        action_mean = self.actor_mean(x)
+        cpg_signal, _ = self.cpg_ctrl.cpg_control_clean(self.gait_type)
+        action_mean = self.actor_mean(x) * 0.0 + cpg_signal
         action_logstd = self.actor_logstd.expand_as(action_mean)
-        action_std = torch.exp(action_logstd)
+        action_std = torch.exp(action_logstd) * 0.1
         probs = Normal(action_mean, action_std)
         if action is None:
             action = probs.sample()
@@ -182,6 +193,11 @@ if __name__ == "__main__":
 
     agent = Agent(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+
+    # Save initial model
+    model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model_init"
+    torch.save(agent.state_dict(), model_path)
+    print(f"initial model saved to {model_path}")
 
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
@@ -321,7 +337,8 @@ if __name__ == "__main__":
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
-        print("SPS:", int(global_step / (time.time() - start_time)))
+        # print("SPS:", int(global_step / (time.time() - start_time)))
+        # print("value loss", v_loss.item(), "policy loss", pg_loss.item(), "entropy loss", entropy_loss.item())
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
     if args.save_model:
