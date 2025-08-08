@@ -338,7 +338,7 @@ if __name__ == "__main__":
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         # print("SPS:", int(global_step / (time.time() - start_time)))
-        # print("value loss", v_loss.item(), "policy loss", pg_loss.item(), "entropy loss", entropy_loss.item())
+        print("value loss", v_loss.item(), "policy loss", pg_loss.item(), "entropy loss", entropy_loss.item())
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
     if args.save_model:
