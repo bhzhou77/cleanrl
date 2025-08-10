@@ -146,7 +146,7 @@ class Agent(nn.Module):
         cpg_signal, _ = self.cpg_ctrl.cpg_control_clean(self.gait_type)
         action_mean = self.actor_mean(x) + cpg_signal
         action_logstd = self.actor_logstd.expand_as(action_mean)
-        action_std = torch.exp(action_logstd) * 0.1
+        action_std = torch.exp(action_logstd)
         probs = Normal(action_mean, action_std)
         if action is None:
             action = probs.sample()
