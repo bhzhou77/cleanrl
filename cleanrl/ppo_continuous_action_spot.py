@@ -144,7 +144,7 @@ class Agent(nn.Module):
 
     def get_action_and_value(self, x, action=None):
         cpg_signal, _ = self.cpg_ctrl.cpg_control_clean(self.gait_type)
-        action_mean = self.actor_mean(x) * 0.0 + cpg_signal
+        action_mean = self.actor_mean(x) + cpg_signal
         action_logstd = self.actor_logstd.expand_as(action_mean)
         action_std = torch.exp(action_logstd) * 0.1
         probs = Normal(action_mean, action_std)
@@ -194,7 +194,7 @@ if __name__ == "__main__":
     agent = Agent(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
-    # Save initial model
+    # Save the initial model
     model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model_init"
     torch.save(agent.state_dict(), model_path)
     print(f"initial model saved to {model_path}")
