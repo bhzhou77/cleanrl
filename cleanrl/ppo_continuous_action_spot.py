@@ -1,14 +1,16 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppo_continuous_actionpy
 import sys
-sys.path.append('../../cpg_ring_attractor/')
 sys.path.append('../')
+sys.path.append('../../')
+sys.path.append('../../cpg_ring_attractor/')
+sys.path.append('../../Gymnasium/')
 
 import os
 import random
 import time
 from dataclasses import dataclass
 
-import gymnasium as gym
+from Gymnasium import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
