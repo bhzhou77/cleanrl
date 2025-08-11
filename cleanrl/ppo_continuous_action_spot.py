@@ -119,10 +119,10 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 
 
 class Agent(nn.Module):
-    def __init__(self, envs, args):
+    def __init__(self, envs):
         super().__init__()
         self.gait_type = 'trot'
-        self.cpg_ctrl = cpg_control.CPGControl(args.cuda)
+        self.cpg_ctrl = cpg_control.CPGControl()
 
         self.critic = nn.Sequential(
             layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
@@ -198,7 +198,7 @@ if __name__ == "__main__":
     )
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
-    agent = Agent(envs, args).to(device)
+    agent = Agent(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # Save the initial model
