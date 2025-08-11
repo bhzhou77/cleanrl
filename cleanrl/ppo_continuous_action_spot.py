@@ -48,13 +48,13 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "Spot-v0"
     """the id of the environment"""
-    total_timesteps: int = 1000000
+    total_timesteps: int = 10000000
     """total timesteps of the experiments"""
     learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 1
+    num_envs: int = 8
     """the number of parallel game environments"""
-    num_steps: int = 2048
+    num_steps: int = 256
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -121,7 +121,6 @@ class Agent(nn.Module):
         super().__init__()
         self.gait_type = 'trot'
         self.cpg_ctrl = cpg_control.CPGControl()
-        # torch.nn.init.zeros_(self.cpg_ctrl.cpgspot_clockwise.readout_layer_joint_angles[self.gait_type].weight)
 
         self.critic = nn.Sequential(
             layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
@@ -131,7 +130,7 @@ class Agent(nn.Module):
             layer_init(nn.Linear(64, 1), std=1.0),
         )
         self.actor_mean = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
+            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod()+np.prod(envs.single_action_space.shape), 64)),
             nn.Tanh(),
             layer_init(nn.Linear(64, 64)),
             nn.Tanh(),
@@ -144,12 +143,18 @@ class Agent(nn.Module):
 
     def get_action_and_value(self, x, action=None):
         cpg_signal, _ = self.cpg_ctrl.cpg_control_clean(self.gait_type)
-        action_mean = self.actor_mean(x) + cpg_signal
+
+        # Add signals from the cpg to the actor network.
+        x_cpg = cpg_signal.repeat(x.size()[0], 1)
+        x_cpg = torch.hstack((x, x_cpg))
+
+        action_mean = self.actor_mean(x_cpg) * 0.0 + cpg_signal
         action_logstd = self.actor_logstd.expand_as(action_mean)
-        action_std = torch.exp(action_logstd)
+        action_std = torch.exp(action_logstd) * 0.001
         probs = Normal(action_mean, action_std)
         if action is None:
             action = probs.sample()
+
         return action, probs.log_prob(action).sum(1), probs.entropy().sum(1), self.critic(x)
 
 
@@ -338,7 +343,7 @@ if __name__ == "__main__":
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         # print("SPS:", int(global_step / (time.time() - start_time)))
-        print("value loss", v_loss.item(), "policy loss", pg_loss.item(), "entropy loss", entropy_loss.item())
+        # print("value loss", v_loss.item(), "policy loss", pg_loss.item(), "entropy loss", entropy_loss.item())
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
     if args.save_model:
