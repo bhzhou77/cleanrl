@@ -145,7 +145,6 @@ class Agent(nn.Module):
 
     def get_action_and_value(self, x, action=None):
         cpg_signal, _ = self.cpg_ctrl.cpg_control_clean(self.gait_type)
-        print('note', cpg_signal.device)
 
         # Add signals from the cpg to the actor network.
         x_cpg = cpg_signal.repeat(x.size()[0], 1)
