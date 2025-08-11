@@ -54,7 +54,7 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 8
+    num_envs: int = 100
     """the number of parallel game environments"""
     num_steps: int = 256
     """the number of steps to run in each environment per policy rollout"""
