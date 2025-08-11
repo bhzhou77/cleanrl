@@ -1,9 +1,9 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppo_continuous_actionpy
 import sys
-sys.path.append('../')
-sys.path.append('../../')
-sys.path.append('../../cpg_ring_attractor/')
-sys.path.append('../../Gymnasium/')
+sys.path.insert(0, '../')
+sys.path.insert(0, '../../')
+sys.path.insert(0, '../../cpg_ring_attractor/')
+sys.path.insert(0, '../../Gymnasium/')
 
 import os
 import random
