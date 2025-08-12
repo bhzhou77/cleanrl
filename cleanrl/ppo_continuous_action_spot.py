@@ -38,7 +38,7 @@ class Args:
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
-    capture_video: bool = False
+    capture_video: bool = True
     """whether to capture videos of the agent performances (check out `videos` folder)"""
     save_model: bool = True
     """whether to save model into the `runs/{run_name}` folder"""
@@ -50,13 +50,13 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "Spot-v0"
     """the id of the environment"""
-    total_timesteps: int = 10000000
+    total_timesteps: int = 1000000
     """total timesteps of the experiments"""
-    learning_rate: float = 3e-5
+    learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
     num_envs: int = 1
     """the number of parallel game environments"""
-    num_steps: int = 1024
+    num_steps: int = 512
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -152,7 +152,7 @@ class Agent(nn.Module):
 
         action_mean = self.actor_mean(x_cpg) + cpg_signal
         action_logstd = self.actor_logstd.expand_as(action_mean)
-        action_std = torch.exp(action_logstd)
+        action_std = torch.exp(action_logstd) * 0.1
         probs = Normal(action_mean, action_std)
         if action is None:
             action = probs.sample()

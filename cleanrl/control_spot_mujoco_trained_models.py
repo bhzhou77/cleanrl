@@ -26,7 +26,7 @@ env_id = 'Spot-v0'
 capture_video = False
 run_name = f""
 gamma = 0.99
-num_envs = 1
+num_envs = 100
 envs = gym.vector.SyncVectorEnv(
         [ppospot.make_env(env_id, i, capture_video, run_name, gamma) for i in range(num_envs)]
     )
