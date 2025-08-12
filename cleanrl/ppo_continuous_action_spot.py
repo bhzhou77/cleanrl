@@ -150,9 +150,9 @@ class Agent(nn.Module):
         x_cpg = cpg_signal.repeat(x.size()[0], 1)
         x_cpg = torch.hstack((x, x_cpg))
 
-        action_mean = self.actor_mean(x_cpg) * 0.0 + cpg_signal
+        action_mean = self.actor_mean(x_cpg) + cpg_signal
         action_logstd = self.actor_logstd.expand_as(action_mean)
-        action_std = torch.exp(action_logstd) * 0.001
+        action_std = torch.exp(action_logstd)
         probs = Normal(action_mean, action_std)
         if action is None:
             action = probs.sample()
