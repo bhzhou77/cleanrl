@@ -125,16 +125,20 @@ class Agent(nn.Module):
         self.cpg_ctrl = cpg_control.CPGControl()
 
         self.critic = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 128)),
+            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 512)),
             nn.Tanh(),
-            layer_init(nn.Linear(128, 128)),
+            layer_init(nn.Linear(512, 256)),
+            nn.Tanh(),
+            layer_init(nn.Linear(256, 128)),
             nn.Tanh(),
             layer_init(nn.Linear(128, 1), std=1.0),
         )
         self.actor_mean = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod()+np.prod(envs.single_action_space.shape), 128)),
+            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod()+np.prod(envs.single_action_space.shape), 512)),
             nn.Tanh(),
-            layer_init(nn.Linear(128, 128)),
+            layer_init(nn.Linear(512, 256)),
+            nn.Tanh(),
+            layer_init(nn.Linear(256, 128)),
             nn.Tanh(),
             layer_init(nn.Linear(128, np.prod(envs.single_action_space.shape)), std=0.01),
         )
@@ -147,12 +151,12 @@ class Agent(nn.Module):
         cpg_signal, _ = self.cpg_ctrl.cpg_control_clean(self.gait_type)
 
         # Add signals from the cpg to the actor network.
-        x_cpg = cpg_signal.repeat(x.size()[0], 1)
+        x_cpg = cpg_signal.repeat(x.size()[0], 1) * 0
         x_cpg = torch.hstack((x, x_cpg))
 
         action_mean = self.actor_mean(x_cpg) + cpg_signal
         action_logstd = self.actor_logstd.expand_as(action_mean)
-        action_std = torch.exp(action_logstd) * 0.1
+        action_std = torch.exp(action_logstd)
         probs = Normal(action_mean, action_std)
         if action is None:
             action = probs.sample()
