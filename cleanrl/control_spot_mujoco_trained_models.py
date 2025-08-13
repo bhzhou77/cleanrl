@@ -1,8 +1,8 @@
 import sys
 sys.path.append('../../')
-sys.path.append('../../Gymnasium/')
+# sys.path.append('../../Gymnasium/')
 
-from Gymnasium import gymnasium as gym
+import gymnasium as gym
 import mujoco as mj
 import mujoco.viewer as mjcv
 import time

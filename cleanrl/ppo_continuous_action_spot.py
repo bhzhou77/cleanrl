@@ -3,14 +3,13 @@ import sys
 sys.path.append('../')
 sys.path.append('../../')
 sys.path.append('../../cpg_ring_attractor/')
-sys.path.append('../../Gymnasium/')
 
 import os
 import random
 import time
 from dataclasses import dataclass
 
-from Gymnasium import gymnasium as gym
+import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
@@ -50,7 +49,7 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "Spot-v0"
     """the id of the environment"""
-    total_timesteps: int = 1000000
+    total_timesteps: int = 100000
     """total timesteps of the experiments"""
     learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
