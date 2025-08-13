@@ -1,4 +1,7 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppopy
+import sys
+sys.path.append('../')
+
 import os
 import random
 import time
@@ -34,6 +37,8 @@ class Args:
     """the entity (team) of wandb's project"""
     capture_video: bool = True
     """whether to capture videos of the agent performances (check out `videos` folder)"""
+    save_model: bool = True
+    """whether to save model into the `runs/{run_name}` folder"""
 
     # Algorithm specific arguments
     env_id: str = "MiniGrid-BlockedUnlockPickup-v0"
@@ -205,6 +210,11 @@ if __name__ == "__main__":
     agent = Agent(envs, args.features_dim).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
+    # Save the initial model
+    model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model_init"
+    torch.save(agent.state_dict(), model_path)
+    print(f"initial model saved to {model_path}")
+
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
     actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
@@ -348,6 +358,11 @@ if __name__ == "__main__":
         if iteration % 10 == 0:
             # print("SPS:", int(global_step / (time.time() - start_time)))
             print("iteration", iteration, "value loss", v_loss.item(), "policy loss", pg_loss.item(), "entropy loss", entropy_loss.item())
+
+    if args.save_model:
+        model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
+        torch.save(agent.state_dict(), model_path)
+        print(f"model saved to {model_path}")
 
     envs.close()
     writer.close()
