@@ -35,11 +35,15 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
     save_model: bool = True
     """whether to save model into the `runs/{run_name}` folder"""
+    parent_folder: str = "ppo_minigrid_chain"
 
     # Algorithm specific arguments
+    order: str = "1"
     env_id: str = "MiniGrid-BlockedUnlockPickup-v0"
     """the id of the environment"""
-    total_timesteps: int = 10000000
+    env_id_pre: str = env_id
+    """the id of the previous environment in the chain"""
+    total_timesteps: int = 1000000
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-3
     """the learning rate of the optimizer"""
@@ -170,7 +174,7 @@ if __name__ == "__main__":
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    run_name = f"{args.parent_folder}/{args.env_id}__{args.exp_name}__{args.seed}__order{args.order}"
     if args.track:
         import wandb
 
@@ -206,6 +210,11 @@ if __name__ == "__main__":
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
     
     agent = Agent(envs, args.features_dim).to(device)
+    if int(args.order) > 1:
+        run_name_pre = f"{args.parent_folder}/{args.env_id_pre}__{args.exp_name}__{args.seed}__order{int(args.order)-1}"
+        model_path_pre = f"runs/{run_name_pre}/{args.exp_name}.cleanrl_model"
+        agent.load_state_dict(torch.load(model_path_pre))
+
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # Save the initial model
