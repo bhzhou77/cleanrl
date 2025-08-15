@@ -41,7 +41,7 @@ class Args:
     order: str = "1"
     env_id: str = "MiniGrid-BlockedUnlockPickup-v0"
     """the id of the environment"""
-    env_id_pre: str = env_id
+    env_id_pre: str = "MiniGrid-BlockedUnlockPickup-v0"
     """the id of the previous environment in the chain"""
     total_timesteps: int = 1000000
     """total timesteps of the experiments"""
@@ -160,9 +160,12 @@ class Agent(nn.Module):
         x = self.cnn_input.forward(x)
         return self.critic(x)
 
-    def get_action_and_value(self, x, action=None):
+    def get_action_and_value(self, x, action=None, reward=1.0):
         x = self.cnn_input.forward(x)
         logits = self.actor(x)
+        if reward < 0.1:
+            logits = torch.where(torch.rand(1) < 0.7, logits, torch.ones(logits.size()))
+
         probs = Categorical(logits=logits)
         if action is None:
             action = probs.sample()
@@ -251,7 +254,7 @@ if __name__ == "__main__":
 
             # ALGO LOGIC: action logic
             with torch.no_grad():
-                action, logprob, _, value = agent.get_action_and_value(next_obs)
+                action, logprob, _, value = agent.get_action_and_value(next_obs, reward=rewards[step])
                 values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
