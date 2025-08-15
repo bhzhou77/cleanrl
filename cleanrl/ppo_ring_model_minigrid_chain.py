@@ -1,8 +1,6 @@
-# docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppo_continuous_actionpy
+# docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppopy
 import sys
-sys.path.append('../')
-sys.path.append('../../')
-sys.path.append('../../cpg_ring_attractor/')
+sys.path.append('../../cognition_ring_attractor/src')
 
 import os
 import random
@@ -15,11 +13,12 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import tyro
-from torch.distributions.normal import Normal
+from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
+import minigrid
+from minigrid.wrappers import ImgObsWrapper
 
-import cpg_control
-
+import ring_attractor as ra
 
 @dataclass
 class Args:
@@ -41,21 +40,21 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
     save_model: bool = True
     """whether to save model into the `runs/{run_name}` folder"""
-    upload_model: bool = False
-    """whether to upload the saved model to huggingface"""
-    hf_entity: str = ""
-    """the user or org name of the model repository from the Hugging Face Hub"""
+    parent_folder: str = "ppo_minigrid_chain"
 
     # Algorithm specific arguments
-    env_id: str = "Spot-v0"
+    order: str = "1"
+    env_id: str = "MiniGrid-BlockedUnlockPickup-v0"
     """the id of the environment"""
-    total_timesteps: int = 100000
+    env_id_pre: str = "MiniGrid-BlockedUnlockPickup-v0"
+    """the id of the previous environment in the chain"""
+    total_timesteps: int = 1000000
     """total timesteps of the experiments"""
-    learning_rate: float = 3e-4
+    learning_rate: float = 2.5e-3
     """the learning rate of the optimizer"""
     num_envs: int = 1
     """the number of parallel game environments"""
-    num_steps: int = 512
+    num_steps: int = 2048
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -63,9 +62,9 @@ class Args:
     """the discount factor gamma"""
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""
-    num_minibatches: int = 32
+    num_minibatches: int = 4
     """the number of mini-batches"""
-    update_epochs: int = 10
+    update_epochs: int = 4
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
@@ -73,7 +72,7 @@ class Args:
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
-    ent_coef: float = 0.0
+    ent_coef: float = 0.01
     """coefficient of the entropy"""
     vf_coef: float = 0.5
     """coefficient of the value function"""
@@ -81,6 +80,12 @@ class Args:
     """the maximum norm for the gradient clipping"""
     target_kl: float = None
     """the target KL divergence threshold"""
+    features_dim: int = 128
+    """the feature dimension after cnn"""
+    nring: int = 16
+    """the number of rings"""
+    effec_layer: int = 5
+    """the number of effective rnn layers"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -91,21 +96,15 @@ class Args:
     """the number of iterations (computed in runtime)"""
 
 
-def make_env(env_id, idx, capture_video, run_name, gamma):
+def make_env(env_id, idx, capture_video, run_name):
     def thunk():
         if capture_video and idx == 0:
             env = gym.make(env_id, render_mode="rgb_array")
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
         else:
             env = gym.make(env_id)
-        env = gym.wrappers.FlattenObservation(env)  # deal with dm_control's Dict observation space
+        env = ImgObsWrapper(env)
         env = gym.wrappers.RecordEpisodeStatistics(env)
-        env = gym.wrappers.ClipAction(env)
-        env = gym.wrappers.NormalizeObservation(env)
-        # env = gym.wrappers.TransformObservation(env, lambda obs: np.clip(obs, -10, 10))
-        env = gym.wrappers.TransformObservation(env, lambda obs: np.clip(obs, -10, 10), observation_space=env.observation_space)
-        env = gym.wrappers.NormalizeReward(env, gamma=gamma)
-        env = gym.wrappers.TransformReward(env, lambda reward: np.clip(reward, -10, 10))
         return env
 
     return thunk
@@ -116,51 +115,98 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
+def layer_init_nobias(layer, std=np.sqrt(2)):
+    torch.nn.init.orthogonal_(layer.weight, std)
+    return layer
+
+
+# adapted from minigrid documentations
+class MinigridFeaturesExtractor(nn.Module):
+    def __init__(self, x, features_dim=128, normalized_image=False):
+        super().__init__()
+        x = x.permute(0, 3, 1, 2)
+        n_input_channels = x.size()[1]
+        self.cnn = nn.Sequential(
+            nn.Conv2d(n_input_channels, 16, (2, 2)),
+            nn.ReLU(),
+            nn.Conv2d(16, 32, (2, 2)),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, (2, 2)),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
+
+        # Compute shape by doing one forward pass
+        with torch.no_grad():
+            n_flatten = self.cnn(x).shape[1]
+
+        self.linear = nn.Sequential(nn.Linear(n_flatten, features_dim), nn.ReLU())
+
+    def forward(self, x):
+        x = x.permute(0, 3, 1, 2)
+        return self.linear(self.cnn(x))
+
 
 class Agent(nn.Module):
-    def __init__(self, envs):
+    def __init__(self, envs, features_dim, nring, effec_layer, minibatch_size):
         super().__init__()
-        self.gait_type = 'trot'
-        self.cpg_ctrl = cpg_control.CPGControl()
+        self.effec_layer = effec_layer
+        self.ra_network_critic = ra.RingAttractorNetwork(nring)
+        self.ra_network_actor = ra.RingAttractorNetwork(nring)
 
-        self.critic = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 512)),
-            nn.Tanh(),
-            layer_init(nn.Linear(512, 256)),
-            nn.Tanh(),
-            layer_init(nn.Linear(256, 128)),
-            nn.Tanh(),
-            layer_init(nn.Linear(128, 1), std=1.0),
-        )
-        self.actor_mean = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod()+np.prod(envs.single_action_space.shape), 512)),
-            nn.Tanh(),
-            layer_init(nn.Linear(512, 256)),
-            nn.Tanh(),
-            layer_init(nn.Linear(256, 128)),
-            nn.Tanh(),
-            layer_init(nn.Linear(128, np.prod(envs.single_action_space.shape)), std=0.01),
-        )
-        self.actor_logstd = nn.Parameter(torch.zeros(1, np.prod(envs.single_action_space.shape)))
+        self.rs_current_critic = self.ra_network_critic.rs_initial
+        self.rs_current_actor = self.ra_network_actor.rs_initial
+        self.rs_current_critic_train = self.rs_current_critic.repeat(minibatch_size, 1)
+        self.rs_current_actor_train = self.rs_current_actor.repeat(minibatch_size, 1)
 
-    def get_value(self, x):
-        return self.critic(x)
+        self.project_in_critic = layer_init_nobias(nn.Linear(features_dim, self.ra_network_critic.nneuron, bias=False))
+        self.project_in_actor = layer_init_nobias(nn.Linear(features_dim, self.ra_network_actor.nneuron, bias=False))
+        self.project_out_critic = layer_init_nobias(nn.Linear(self.ra_network_critic.nneuron, 1, bias=False), std=0.01)
+        self.project_out_actor = layer_init_nobias(nn.Linear(self.ra_network_actor.nneuron, envs.single_action_space.n, bias=False), std=0.01)
 
-    def get_action_and_value(self, x, action=None):
-        cpg_signal, _ = self.cpg_ctrl.cpg_control_clean(self.gait_type)
+        # the last three dimensions of x_test need to be compatible with the original data
+        self.register_buffer('x_test', torch.rand(1, 7, 7, 3))
+        self.cnn_input = MinigridFeaturesExtractor(self.x_test, features_dim)
 
-        # Add signals from the cpg to the actor network.
-        x_cpg = cpg_signal.repeat(x.size()[0], 1)
-        x_cpg = torch.hstack((x, x_cpg))
+    def get_value(self, x, train=False):
+        xp = self.cnn_input.forward(x)
+        xp = self.project_in_critic(xp)
 
-        action_mean = self.actor_mean(x_cpg) + cpg_signal
-        action_logstd = self.actor_logstd.expand_as(action_mean)
-        action_std = torch.exp(action_logstd)
-        probs = Normal(action_mean, action_std)
+        if not train:
+            self.rs_current_critic = self.ra_network_critic.update_firing_rate_one_step(self.rs_current_critic, xp)
+            for ll in range(1, self.effec_layer):
+                self.rs_current_critic = self.ra_network_critic.update_firing_rate_one_step(self.rs_current_critic)
+            rs_delta7_critic = self.ra_network_critic.get_firing_rate_delta7(self.rs_current_critic)
+        else:
+            self.rs_current_critic_train = self.ra_network_critic.update_firing_rate_one_step(self.rs_current_critic_train, xp)
+            for ll in range(1, self.effec_layer):
+                self.rs_current_critic_train = self.ra_network_critic.update_firing_rate_one_step(self.rs_current_critic_train)
+            rs_delta7_critic = self.ra_network_critic.get_firing_rate_delta7(self.rs_current_critic_train)
+        
+        return self.project_out_critic(rs_delta7_critic)
+
+    def get_action_and_value(self, x, action=None, reward=1.0, train=False):
+        xp = self.cnn_input.forward(x)
+        xp = self.project_in_actor(xp)
+
+        if not train:
+            self.rs_current_actor = self.ra_network_actor.update_firing_rate_one_step(self.rs_current_actor, xp)
+            for ll in range(1, self.effec_layer):
+                self.rs_current_actor = self.ra_network_actor.update_firing_rate_one_step(self.rs_current_actor)
+            rs_delta7_actor = self.ra_network_actor.get_firing_rate_delta7(self.rs_current_actor)
+        else:
+            self.rs_current_actor_train = self.ra_network_actor.update_firing_rate_one_step(self.rs_current_actor_train, xp)
+            for ll in range(1, self.effec_layer):
+                self.rs_current_actor_train = self.ra_network_actor.update_firing_rate_one_step(self.rs_current_actor_train)
+            rs_delta7_actor = self.ra_network_actor.get_firing_rate_delta7(self.rs_current_actor_train)
+        
+        logits = self.project_out_actor(rs_delta7_actor)
+        if reward < 0.1:
+            logits = torch.where(torch.rand(1) < 0.7, logits, torch.ones(logits.size()))
+        probs = Categorical(logits=logits)
         if action is None:
             action = probs.sample()
-
-        return action, probs.log_prob(action).sum(1), probs.entropy().sum(1), self.critic(x)
+        return action, probs.log_prob(action), probs.entropy(), self.get_value(x, train)
 
 
 if __name__ == "__main__":
@@ -168,7 +214,7 @@ if __name__ == "__main__":
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    run_name = f"{args.parent_folder}/{args.env_id}__{args.exp_name}__{args.seed}__order{args.order}"
     if args.track:
         import wandb
 
@@ -187,6 +233,8 @@ if __name__ == "__main__":
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
+    print(f"Training in {args.env_id}.")
+
     # TRY NOT TO MODIFY: seeding
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -197,11 +245,16 @@ if __name__ == "__main__":
 
     # env setup
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, i, args.capture_video, run_name, args.gamma) for i in range(args.num_envs)]
+        [make_env(args.env_id, i, args.capture_video, run_name) for i in range(args.num_envs)],
     )
-    assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
+    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    
+    agent = Agent(envs, args.features_dim, args.nring, args.effec_layer, args.minibatch_size).to(device)
+    if int(args.order) > 1:
+        run_name_pre = f"{args.parent_folder}/{args.env_id_pre}__{args.exp_name}__{args.seed}__order{int(args.order)-1}"
+        model_path_pre = f"runs/{run_name_pre}/{args.exp_name}.cleanrl_model"
+        agent.load_state_dict(torch.load(model_path_pre))
 
-    agent = Agent(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # Save the initial model
@@ -238,7 +291,7 @@ if __name__ == "__main__":
 
             # ALGO LOGIC: action logic
             with torch.no_grad():
-                action, logprob, _, value = agent.get_action_and_value(next_obs)
+                action, logprob, _, value = agent.get_action_and_value(next_obs, reward=rewards[step])
                 values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
@@ -289,7 +342,7 @@ if __name__ == "__main__":
                 end = start + args.minibatch_size
                 mb_inds = b_inds[start:end]
 
-                _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions[mb_inds])
+                _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions.long()[mb_inds], train=True)
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
 
@@ -347,35 +400,16 @@ if __name__ == "__main__":
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
-        # print("SPS:", int(global_step / (time.time() - start_time)))
-        # print("value loss", v_loss.item(), "policy loss", pg_loss.item(), "entropy loss", entropy_loss.item())
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+
+        if iteration % 10 == 0:
+            # print("SPS:", int(global_step / (time.time() - start_time)))
+            print("iteration", iteration, "value loss", v_loss.item(), "policy loss", pg_loss.item(), "entropy loss", entropy_loss.item())
 
     if args.save_model:
         model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
         torch.save(agent.state_dict(), model_path)
         print(f"model saved to {model_path}")
-        from cleanrl_utils.evals.ppo_eval import evaluate
-
-        episodic_returns = evaluate(
-            model_path,
-            make_env,
-            args.env_id,
-            eval_episodes=10,
-            run_name=f"{run_name}-eval",
-            Model=Agent,
-            device=device,
-            gamma=args.gamma,
-        )
-        for idx, episodic_return in enumerate(episodic_returns):
-            writer.add_scalar("eval/episodic_return", episodic_return, idx)
-
-        if args.upload_model:
-            from cleanrl_utils.huggingface import push_to_hub
-
-            repo_name = f"{args.env_id}-{args.exp_name}-seed{args.seed}"
-            repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
-            push_to_hub(args, episodic_returns, repo_id, "PPO", f"runs/{run_name}", f"videos/{run_name}-eval")
 
     envs.close()
     writer.close()
