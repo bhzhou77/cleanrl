@@ -82,12 +82,13 @@ class Args:
     """the target KL divergence threshold"""
     features_dim: int = 128
     """the feature dimension after cnn"""
-    nring: int = 16
+    nring: int = 4
     """the number of rings"""
-    nupdate: int = 1
+    nupdate: int = 5
     """the number of updates for each cycle of the rnn"""
     nneuron: int = 256
     """the number of nneurons in the rnn"""
+    taus: tuple = (0.04, 1.0, 1.0, 0.04)
 
     # to be filled in runtime
     batch_size: int = 0
@@ -116,6 +117,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
+
 
 def layer_init_nobias(layer, std=np.sqrt(2)):
     torch.nn.init.orthogonal_(layer.weight, std)
@@ -150,11 +152,11 @@ class MinigridFeaturesExtractor(nn.Module):
 
 
 class Agent(nn.Module):
-    def __init__(self, envs, features_dim, nring, nneuron, nupdate):
+    def __init__(self, envs, features_dim, nring, nneuron, taus, nupdate):
         super().__init__()
         self.nupdate = nupdate
-        self.ra_network_critic = ra.RingAttractorNetwork(nring, nneuron)
-        self.ra_network_actor = ra.RingAttractorNetwork(nring, nneuron)
+        self.ra_network_critic = ra.RingAttractorNetwork(nring, nneuron, taus)
+        self.ra_network_actor = ra.RingAttractorNetwork(nring, nneuron, taus)
 
         self.project_in_critic = layer_init_nobias(nn.Linear(features_dim, nneuron, bias=False))
         self.project_in_actor = layer_init_nobias(nn.Linear(features_dim, nneuron, bias=False))
@@ -169,16 +171,15 @@ class Agent(nn.Module):
         xp = self.cnn_input.forward(x)
         xp = self.project_in_critic(xp)
         rs_current, rs_delta7 = self.ra_network_critic.update_firing_rate_full_cycle(rs_current, self.nupdate, xp)
-        
-        return rs_current, self.project_out_critic(rs_delta7)
+        value = self.project_out_critic(rs_delta7)
+
+        return rs_current, value
 
     def get_action(self, rs_current, x, action=None, reward=1.0):
         xp = self.cnn_input.forward(x)
         xp = self.project_in_actor(xp)
         rs_current, rs_delta7 = self.ra_network_actor.update_firing_rate_full_cycle(rs_current, self.nupdate, xp)
         logits = self.project_out_actor(rs_delta7)
-        # logits = torch.ones(1, 7)
-        print(logits)
         if reward < 0.1:
             logits = torch.where(torch.rand(1) < 0.7, logits, torch.ones(logits.size()))
         probs = Categorical(logits=logits)
@@ -205,9 +206,6 @@ class Agent(nn.Module):
 #             nn.Tanh(),
 #             layer_init(nn.Linear(256, envs.single_action_space.n), std=0.01),
 #         )
-
-#         self.project_in_actor = layer_init_nobias(nn.Linear(features_dim, nneuron, bias=False))
-#         self.project_out_actor = layer_init_nobias(nn.Linear(nneuron, envs.single_action_space.n, bias=False), std=0.01)
 
 #         # the last three dimensions of x_test need to be compatible with the original data
 #         self.register_buffer('x_test', torch.rand(1, 7, 7, 3))
@@ -269,7 +267,7 @@ if __name__ == "__main__":
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
     
-    agent = Agent(envs, args.features_dim, args.nring, args.nneuron, args.nupdate).to(device)
+    agent = Agent(envs, args.features_dim, args.nring, args.nneuron, args.taus, args.nupdate).to(device)
     if int(args.order) > 1:
         run_name_pre = f"{args.parent_folder}/{args.env_id_pre}__{args.exp_name}__{args.seed}__order{int(args.order)-1}"
         model_path_pre = f"runs/{run_name_pre}/{args.exp_name}.cleanrl_model"
@@ -298,12 +296,13 @@ if __name__ == "__main__":
     next_done = torch.zeros(args.num_envs).to(device)
 
     # Get the initial firing rate
-    # ra_network_init = ra.RingAttractorNetwork(args.nring, args.nneuron)
-    # rs_initial = ra_network_init.rs_initial
-    # for param in ra_network_init.parameters():
-    #     param.requires_grad = False
+    ra_network_init = ra.RingAttractorNetwork(args.nring, args.nneuron, args.taus)
+    rs_initial = ra_network_init.rs_initial
+    for param in ra_network_init.parameters():
+        param.requires_grad = False
 
-    rs_initial = torch.rand(1, 256)
+    # rs_initial = torch.rand(1, 256)
+    # rs_initial = rs_initial / torch.norm(rs_initial, dim=1, keepdim=True)
 
     for iteration in range(1, args.num_iterations + 1):
         rs_current_critic = rs_initial.clone()
@@ -321,8 +320,8 @@ if __name__ == "__main__":
 
             # ALGO LOGIC: action logic
             with torch.no_grad():
-                rs_current_actor, action, logprob, _ = agent.get_action(rs_current_actor, next_obs, reward=rewards[step])
-                rs_current_critic, value = agent.get_value(rs_current_critic, next_obs)
+                rs_current_actor, action, logprob, _ = agent.get_action(rs_initial, next_obs, reward=rewards[step])
+                rs_current_critic, value = agent.get_value(rs_initial, next_obs)
                 values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
@@ -342,7 +341,7 @@ if __name__ == "__main__":
 
         # bootstrap value if not done
         with torch.no_grad():
-            rs_current_critic, next_value = agent.get_value(rs_current_critic, next_obs)
+            rs_current_critic, next_value = agent.get_value(rs_initial, next_obs)
             next_value = next_value.reshape(1, -1)
             advantages = torch.zeros_like(rewards).to(device)
             lastgaelam = 0
@@ -376,8 +375,8 @@ if __name__ == "__main__":
                 end = start + args.minibatch_size
                 mb_inds = b_inds[start:end]
 
-                rs_current_actor, _, newlogprob, entropy = agent.get_action(rs_current_actor, b_obs[mb_inds], b_actions.long()[mb_inds])
-                rs_current_critic, newvalue = agent.get_value(rs_current_critic, b_obs[mb_inds])
+                rs_current_actor, _, newlogprob, entropy = agent.get_action(rs_initial, b_obs[mb_inds], b_actions.long()[mb_inds])
+                rs_current_critic, newvalue = agent.get_value(rs_initial, b_obs[mb_inds])
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
 
