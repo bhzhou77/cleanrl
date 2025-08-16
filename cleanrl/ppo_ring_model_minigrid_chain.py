@@ -84,7 +84,7 @@ class Args:
     """the feature dimension after cnn"""
     nring: int = 16
     """the number of rings"""
-    nupdate: int = 5
+    nupdate: int = 1
     """the number of updates for each cycle of the rnn"""
     nneuron: int = 256
     """the number of nneurons in the rnn"""
@@ -177,6 +177,8 @@ class Agent(nn.Module):
         xp = self.project_in_actor(xp)
         rs_current, rs_delta7 = self.ra_network_actor.update_firing_rate_full_cycle(rs_current, self.nupdate, xp)
         logits = self.project_out_actor(rs_delta7)
+        # logits = torch.ones(1, 7)
+        print(logits)
         if reward < 0.1:
             logits = torch.where(torch.rand(1) < 0.7, logits, torch.ones(logits.size()))
         probs = Categorical(logits=logits)
